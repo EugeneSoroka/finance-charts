@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>S&P 500 Bubble Chart (Cached)</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #fafafa;
+    }
+    #chartContainer {
+      width: 100%;
+      max-width: 900px;
+      margin: auto;
+    }
+  </style>
+</head>
+<body>
+  <h2>S&P 500 Bubble Chart (Last 7 Days, Cached)</h2>
+  <p>Данные загружаются один раз, затем читаются из кеша (IndexedDB).</p>
+
+  <div id="chartContainer">
+    <canvas id="bubbleChart"></canvas>
+  </div>
+
+  <script>
+    /************** IndexedDB Wrapper **************/
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open("sp500DB", 1);
+
+        request.onupgradeneeded = (event) => {
+          const db = event.target.result;
+          if (!db.objectStoreNames.contains("prices")) {
+            db.createObjectStore("prices", { keyPath: "date" });
+          }
+        };
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function saveToDB(key, data) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction("prices", "readwrite");
+        tx.objectStore("prices").put({ date: key, data });
+        tx.oncomplete = resolve;
+        tx.onerror = reject;
+      });
+    }
+
+    async function loadFromDB(key) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction("prices", "readonly");
+        const req = tx.objectStore("prices").get(key);
+        req.onsuccess = () => resolve(req.result ? req.result.data : null);
+        req.onerror = reject;
+      });
+    }
+
+    /************** Data Loading **************/
+    async function fetchSp500Data(date) {
+      const cached = await loadFromDB(date);
+      if (cached) {
+        console.log("Loaded from cache", date);
+        return cached;
+      }
+
+      console.log("Downloading fresh", date);
+
+      const url = `https://query1.finance.yahoo.com/v7/finance/download/%5EGSPC?period1=${date}T00:00:00Z&period2=${date}T23:59:59Z&interval=1d&events=history`;
+
+      const response = await fetch(url);
+      const text = await response.text();
+
+      await saveToDB(date, text);
+      return text;
+    }
+
+    function csvToPrice(csv) {
+      const lines = csv.trim().split("\n");
+      if (lines.length < 2) return null;
+      const cols = lines[1].split(",");
+      return parseFloat(cols[4]); // Close price
+    }
+
+    async function loadLast7Days() {
+      const today = new Date();
+      const result = [];
+
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const iso = d.toISOString().split("T")[0];
+
+        const csv = await fetchSp500Data(iso);
+        const price = csvToPrice(csv);
+        if (price) result.push({ date: iso, price });
+      }
+
+      return result.reverse();
+    }
+
+    /************** Chart Rendering **************/
+    function renderChart(data) {
+      const ctx = document.getElementById("bubbleChart");
+
+      const chartData = data.map((p, i) => ({
+        x: i,
+        y: p.price,
+        r: 8
+      }));
+
+      new Chart(ctx, {
+        type: "bubble",
+        data: {
+          datasets: [
+            {
+              label: "S&P 500 (last 7 days)",
+              data: chartData,
+              backgroundColor: "rgba(54, 162, 235, 0.6)",
+            },
+          ],
+        },
+        options: {
+          scales: {
+            x: { title: { display: true, text: "Day index" } },
+            y: { title: { display: true, text: "Price" } },
+          },
+        },
+      });
+    }
+
+    /************** Bootstrap **************/
+    (async function () {
+      const data = await loadLast7Days();
+      renderChart(data);
+    })();
+  </script>
+</body>
+</html>
