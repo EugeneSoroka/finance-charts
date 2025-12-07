@@ -26,6 +26,8 @@
     <canvas id="bubbleChart"></canvas>
   </div>
 
+    <div id="debugInfo" style="max-width:900px;margin:auto;margin-top:20px;padding:10px;background:#fff0f0;border:1px solid #e0c0c0;color:#a00;font-size:14px;display:none"></div>
+
   <script>
     /************** IndexedDB Wrapper **************/
     function openDB() {
@@ -66,45 +68,78 @@
 
     /************** Data Loading **************/
     async function fetchSp500Data(date) {
-      const cached = await loadFromDB(date);
-      if (cached) {
-        console.log("Loaded from cache", date);
-        return cached;
-      }
+        const debug = document.getElementById('debugInfo');
+        const cached = await loadFromDB(date);
+        if (cached) {
+          debug.style.display = 'block';
+          debug.innerText += `\n[${date}] Loaded from cache.`;
+          console.log("Loaded from cache", date);
+          return cached;
+        }
 
-      console.log("Downloading fresh", date);
+        debug.style.display = 'block';
+        debug.innerText += `\n[${date}] Downloading fresh...`;
+        // Convert date to UNIX timestamps for Yahoo API
+        const d = new Date(date);
+        const period1 = Math.floor(d.setHours(0,0,0,0)/1000);
+        const period2 = Math.floor(d.setHours(23,59,59,999)/1000);
+        const url = `https://query1.finance.yahoo.com/v7/finance/download/%5EGSPC?period1=${period1}&period2=${period2}&interval=1d&events=history`;
 
-      const url = `https://query1.finance.yahoo.com/v7/finance/download/%5EGSPC?period1=${date}T00:00:00Z&period2=${date}T23:59:59Z&interval=1d&events=history`;
+        let text = '';
+        try {
+          const response = await fetch(url);
+          if (!response.ok) {
+            debug.innerText += `\n[${date}] Fetch error: ${response.status} ${response.statusText}`;
+            return '';
+          }
+          text = await response.text();
+        } catch (err) {
+          debug.innerText += `\n[${date}] Network error: ${err}`;
+          return '';
+        }
 
-      const response = await fetch(url);
-      const text = await response.text();
-
-      await saveToDB(date, text);
-      return text;
+        await saveToDB(date, text);
+        return text;
     }
 
     function csvToPrice(csv) {
-      const lines = csv.trim().split("\n");
-      if (lines.length < 2) return null;
-      const cols = lines[1].split(",");
-      return parseFloat(cols[4]); // Close price
+        if (!csv || typeof csv !== 'string') return null;
+        const lines = csv.trim().split("\n");
+        if (lines.length < 2) return null;
+        // Find first non-header line with valid price
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(",");
+          if (cols.length > 4 && !isNaN(parseFloat(cols[4]))) {
+            return parseFloat(cols[4]); // Close price
+          }
+        }
+        return null;
     }
 
     async function loadLast7Days() {
-      const today = new Date();
-      const result = [];
+        const today = new Date();
+        const result = [];
+        const debug = document.getElementById('debugInfo');
+        debug.innerText = '';
+        debug.style.display = 'none';
 
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - i);
-        const iso = d.toISOString().split("T")[0];
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(today);
+          d.setDate(d.getDate() - i);
+          const iso = d.toISOString().split("T")[0];
 
-        const csv = await fetchSp500Data(iso);
-        const price = csvToPrice(csv);
-        if (price) result.push({ date: iso, price });
-      }
+          const csv = await fetchSp500Data(iso);
+          const price = csvToPrice(csv);
+          if (price) {
+            result.push({ date: iso, price });
+            debug.innerText += `\n[${iso}] Price: ${price}`;
+          } else {
+            debug.innerText += `\n[${iso}] No price data.`;
+          }
+        }
 
-      return result.reverse();
+        debug.style.display = 'block';
+        return result.reverse();
     }
 
     /************** Chart Rendering **************/
